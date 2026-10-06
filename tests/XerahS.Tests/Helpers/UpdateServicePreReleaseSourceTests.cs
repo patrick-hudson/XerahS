@@ -34,7 +34,7 @@ namespace XerahS.Tests.Helpers;
 public class UpdateServicePreReleaseSourceTests
 {
     [Test]
-    public void ResolveUpdateRepository_Release_UsesShareX()
+    public void ResolveUpdateRepository_Release_UsesFork()
     {
         var settings = new ApplicationConfig
         {
@@ -44,8 +44,47 @@ public class UpdateServicePreReleaseSourceTests
 
         var repository = UpdateService.ResolveUpdateRepository(settings);
 
-        Assert.That(repository.Owner, Is.EqualTo("ShareX"));
+        Assert.That(repository.Owner, Is.EqualTo("patrick-hudson"));
         Assert.That(repository.Repo, Is.EqualTo("XerahS"));
+    }
+
+    [TestCase(UpdateChannel.Release)]
+    [TestCase(UpdateChannel.PreRelease)]
+    public void ResolveUpdateRepository_FreshSettings_UsesFork(UpdateChannel channel)
+    {
+        var settings = new ApplicationConfig();
+        Assert.That(settings.UpdateChannel, Is.EqualTo(UpdateChannel.Release));
+        Assert.That(settings.PreReleaseUpdateSource, Is.EqualTo(PreReleaseUpdateSource.Custom));
+        Assert.That(settings.CustomPreReleaseUpdateSource, Is.EqualTo("patrick-hudson/XerahS"));
+        settings.UpdateChannel = channel;
+
+        var repository = UpdateService.ResolveUpdateRepository(settings);
+
+        Assert.That(repository.Owner, Is.EqualTo("patrick-hudson"));
+        Assert.That(repository.Repo, Is.EqualTo("XerahS"));
+    }
+
+    [Test]
+    public void ResolveUpdateRepository_ExistingStableSettings_UsesFork()
+    {
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, """
+                {"UpdateChannel":"Release","PreReleaseUpdateSource":"KovaForge","CustomPreReleaseUpdateSource":""}
+                """);
+            ApplicationConfig settings = ApplicationConfig.Load(path, fallbackSupport: false);
+
+            var repository = UpdateService.ResolveUpdateRepository(settings);
+
+            Assert.That(repository.Owner, Is.EqualTo("patrick-hudson"));
+            Assert.That(repository.Repo, Is.EqualTo("XerahS"));
+            Assert.That(settings.PreReleaseUpdateSource, Is.EqualTo(PreReleaseUpdateSource.KovaForge));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Test]
@@ -111,7 +150,7 @@ public class UpdateServicePreReleaseSourceTests
     }
 
     [Test]
-    public void ResolveUpdateRepository_BlankCustomSource_FallsBackToKovaForge()
+    public void ResolveUpdateRepository_BlankCustomSource_FallsBackToFork()
     {
         var settings = new ApplicationConfig
         {
@@ -122,7 +161,7 @@ public class UpdateServicePreReleaseSourceTests
 
         var repository = UpdateService.ResolveUpdateRepository(settings);
 
-        Assert.That(repository.Owner, Is.EqualTo("KovaForge"));
+        Assert.That(repository.Owner, Is.EqualTo("patrick-hudson"));
         Assert.That(repository.Repo, Is.EqualTo("XerahS"));
     }
 

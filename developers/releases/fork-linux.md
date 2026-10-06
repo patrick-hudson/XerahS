@@ -68,7 +68,17 @@ the release manifest. The AppImage packager pins appimagetool 1.9.0 but currentl
 downloads the type2 runtime from its `continuous` release; that runtime remains
 a packaging reproducibility limit inherited from the packager.
 
-For updates from this fork, configure the app's update channel to **Pre-release**,
-select **Custom**, and set its source to `patrick-hudson/XerahS`. The app's default
-update sources still point to the original repositories; the workflow does not
-change user settings or their update source.
+The app's **Release** update channel checks `patrick-hudson/XerahS` by default,
+including when upgrading an existing stable-channel profile. Fresh settings also
+use **Custom** with `patrick-hudson/XerahS` for the **Pre-release** channel. Saved
+pre-release selections of ShareX, KovaForge, another custom repository, or
+**Any source** are preserved. To switch an existing pre-release profile to this
+fork, select **Custom** and set its source to `patrick-hudson/XerahS`.
+
+Keep release tags numeric, such as `v0.31.5`; the updater parses the tag as a
+numeric version. The release title identifies the Linux fork. The Linux in-app
+updater's install step still uses Windows installer arguments, so install a newer
+`.deb` with the system package installer or `sudo apt install ./XerahS-X.Y.Z-linux-x64.deb`.
+The package upgrades the existing `xerahs` installation and keeps the user's
+settings outside the installation directory. AppImages run separately from the
+installed package.

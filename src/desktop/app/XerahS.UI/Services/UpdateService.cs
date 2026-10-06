@@ -43,9 +43,10 @@ public class UpdateService : IDisposable
 {
     private static UpdateService? _instance;
     private static readonly object _lock = new();
-    private const string DefaultReleaseOwner = "ShareX";
-    private const string DefaultPreReleaseOwner = "KovaForge";
-    private const string DefaultRepo = "XerahS";
+    private const string DefaultOwner = AppResources.DefaultUpdateRepositoryOwner;
+    private const string DefaultRepo = AppResources.DefaultUpdateRepositoryName;
+    private const string ShareXOwner = "ShareX";
+    private const string KovaForgeOwner = "KovaForge";
 
     public static UpdateService Instance
     {
@@ -171,19 +172,20 @@ public class UpdateService : IDisposable
     {
         if (settings.UpdateChannel != UpdateChannel.PreRelease)
         {
-            return [(DefaultReleaseOwner, DefaultRepo)];
+            return [(DefaultOwner, DefaultRepo)];
         }
 
         return settings.PreReleaseUpdateSource switch
         {
-            PreReleaseUpdateSource.ShareX => [(DefaultReleaseOwner, DefaultRepo)],
+            PreReleaseUpdateSource.ShareX => [(ShareXOwner, DefaultRepo)],
+            PreReleaseUpdateSource.KovaForge => [(KovaForgeOwner, DefaultRepo)],
             PreReleaseUpdateSource.Custom => [ResolveCustomPreReleaseRepository(settings.CustomPreReleaseUpdateSource)],
             PreReleaseUpdateSource.Any =>
             [
-                (DefaultReleaseOwner, DefaultRepo),
-                (DefaultPreReleaseOwner, DefaultRepo)
+                (ShareXOwner, DefaultRepo),
+                (KovaForgeOwner, DefaultRepo)
             ],
-            _ => [(DefaultPreReleaseOwner, DefaultRepo)]
+            _ => [(DefaultOwner, DefaultRepo)]
         };
     }
 
@@ -192,7 +194,7 @@ public class UpdateService : IDisposable
         string normalized = NormalizeCustomPreReleaseSource(source);
         if (string.IsNullOrWhiteSpace(normalized))
         {
-            return (DefaultPreReleaseOwner, DefaultRepo);
+            return (DefaultOwner, DefaultRepo);
         }
 
         string[] parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
