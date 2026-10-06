@@ -23,36 +23,27 @@
 
 #endregion License Information (GPL v3)
 
-using XerahS.Uploaders.Multipart;
+using Amazon.S3;
+using System.Net;
 
-namespace ShareX.AmazonS3.Plugin.Multipart;
+namespace ShareX.AmazonS3.Plugin;
 
-public sealed class S3MultipartUploadOptions : MultipartUploadOptions
+internal static class S3ObjectKey
 {
-    public string BucketName { get; set; } = string.Empty;
+    public const int MaximumUploadAttempts = 16;
 
-    public string ObjectKey { get; set; } = string.Empty;
+    public static bool IsConditionalConflict(AmazonS3Exception exception)
+        => exception.StatusCode == HttpStatusCode.PreconditionFailed ||
+            (exception.StatusCode == HttpStatusCode.Conflict && exception.ErrorCode == "ConditionalRequestConflict");
 
-    public string? URL { get; set; }
-
-    public S3StorageClass StorageClass { get; set; } = S3StorageClass.Standard;
-
-    public bool SetPublicAcl { get; set; }
-
-    public bool AvoidOverwritingExistingFiles { get; set; }
-
-    public override void Validate()
+    public static string WithRandomSuffix(string key)
     {
-        base.Validate();
-
-        if (string.IsNullOrWhiteSpace(BucketName))
+        int leafStart = key.LastIndexOf('/') + 1;
+        int extensionStart = key.LastIndexOf('.');
+        if (extensionStart <= leafStart || extensionStart == key.Length - 1)
         {
-            throw new ArgumentException("S3 bucket name is required.", nameof(BucketName));
+            extensionStart = key.Length;
         }
-
-        if (string.IsNullOrWhiteSpace(ObjectKey))
-        {
-            throw new ArgumentException("S3 object key is required.", nameof(ObjectKey));
-        }
+        return key.Insert(extensionStart, "-" + Guid.NewGuid().ToString("N")[..12]);
     }
 }

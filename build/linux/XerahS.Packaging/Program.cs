@@ -882,7 +882,7 @@ File.CreateSymbolicLink(symlinkPath, "../lib/xerahs/XerahS");
 
     static bool IsExecutablePayloadPath(string path)
     {
-        string normalized = path.Replace('\\', '/');
+        string normalized = "/" + path.Replace('\\', '/');
         return normalized.EndsWith("/xerahs", StringComparison.OrdinalIgnoreCase) ||
                normalized.EndsWith("/XerahS", StringComparison.OrdinalIgnoreCase) ||
                normalized.EndsWith("/xerahs-watchfolder-daemon", StringComparison.OrdinalIgnoreCase) ||

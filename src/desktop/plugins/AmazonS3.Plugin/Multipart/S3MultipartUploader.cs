@@ -74,6 +74,8 @@ public sealed class S3MultipartUploader : IMultipartUploader
         int committedPartCount = 0;
         string? uploadId = null;
         bool uploadCompleted = false;
+        bool completingUpload = false;
+        AmazonS3Exception? conditionalConflict = null;
         Exception? firstFailure = null;
 
         using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -294,11 +296,13 @@ public sealed class S3MultipartUploader : IMultipartUploader
                 BucketName = s3Options.BucketName,
                 Key = s3Options.ObjectKey,
                 UploadId = uploadId,
+                IfNoneMatch = s3Options.AvoidOverwritingExistingFiles ? "*" : null,
                 PartETags = orderedParts
                     .Select(part => new PartETag(part.PartNumber, part.ETag))
                     .ToList()
             };
 
+            completingUpload = true;
             CompleteMultipartUploadResponse completeResponse = await CompleteWithRetryAsync(
                 completeRequest,
                 s3Options.RetryPolicy,
@@ -321,6 +325,12 @@ public sealed class S3MultipartUploader : IMultipartUploader
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             WriteLog("Multipart upload cancelled.");
+            throw;
+        }
+        catch (AmazonS3Exception ex) when (completingUpload && s3Options.AvoidOverwritingExistingFiles && S3ObjectKey.IsConditionalConflict(ex))
+        {
+            // The caller retries with a new key only after finally cleans up this upload.
+            conditionalConflict = ex;
             throw;
         }
         catch (MultipartUploadException)
@@ -353,9 +363,22 @@ public sealed class S3MultipartUploader : IMultipartUploader
                         UploadId = uploadId
                     }, CancellationToken.None);
                 }
+                catch (AmazonS3Exception abortEx) when (conditionalConflict != null &&
+                    abortEx.StatusCode == HttpStatusCode.NotFound && abortEx.ErrorCode == "NoSuchUpload")
+                {
+                    WriteLog("Conflicting multipart upload no longer exists.");
+                }
                 catch (Exception abortEx)
                 {
                     WriteLog($"Abort failed ({abortEx.GetType().Name}).");
+                    if (conditionalConflict != null)
+                    {
+                        throw new MultipartUploadException(
+                            $"Could not abort conflicting multipart upload '{uploadId}': {abortEx.Message}",
+                            uploadId,
+                            completedParts.Values.OrderBy(part => part.PartNumber).ToList(),
+                            new AggregateException(conditionalConflict, abortEx));
+                    }
                 }
             }
         }

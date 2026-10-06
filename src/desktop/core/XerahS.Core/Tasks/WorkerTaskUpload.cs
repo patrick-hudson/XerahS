@@ -35,19 +35,26 @@ namespace XerahS.Core.Tasks
     /// </summary>
     public partial class WorkerTask
     {
-        internal bool TryLoadClipboardContent(TaskSettings taskSettings, TaskMetadata metadata, out string[]? clipboardFiles)
+        internal async Task<(bool Loaded, string[]? Files)> TryLoadClipboardContentAsync(
+            TaskSettings taskSettings, TaskMetadata metadata, CancellationToken token)
         {
-            clipboardFiles = null;
+            token.ThrowIfCancellationRequested();
             var clipboard = PlatformServices.Clipboard;
             if (clipboard == null)
             {
-                return false;
+                return (false, null);
             }
 
-            var content = ClipboardContentHelper.ParseClipboard(clipboard);
+            var content = await ClipboardContentHelper.ParseClipboardAsync(clipboard, token);
+            if (token.IsCancellationRequested)
+            {
+                content?.Image?.Dispose();
+                token.ThrowIfCancellationRequested();
+            }
+
             if (content == null)
             {
-                return false;
+                return (false, null);
             }
 
             switch (content.DataType)
@@ -58,7 +65,7 @@ namespace XerahS.Core.Tasks
                     Info.Job = TaskJob.DataUpload;
                     string imageExtension = EnumExtensions.GetDescription(taskSettings.ImageSettings.ImageFormat);
                     Info.SetFileName(TaskHelpers.GetFileName(taskSettings, imageExtension, metadata));
-                    return true;
+                    return (true, null);
 
                 case EDataType.Text:
                     Info.TextContent = content.Text;
@@ -66,37 +73,37 @@ namespace XerahS.Core.Tasks
                     Info.Job = TaskJob.TextUpload;
                     string textExtension = taskSettings.AdvancedSettings.TextFileExtension;
                     Info.SetFileName(TaskHelpers.GetFileName(taskSettings, textExtension, metadata));
-                    return true;
+                    return (true, null);
 
                 case EDataType.File:
-                    clipboardFiles = content.Files;
+                    var clipboardFiles = content.Files;
                     if (clipboardFiles == null || clipboardFiles.Length == 0)
                     {
-                        return false;
+                        return (false, null);
                     }
                     Info.FilePath = clipboardFiles[0];
                     Info.DataType = EDataType.File;
                     Info.Job = TaskJob.FileUpload;
-                    return true;
+                    return (true, clipboardFiles);
             }
 
-            return false;
+            return (false, null);
         }
 
-        internal async Task UploadClipboardFilesAsync(TaskSettings taskSettings, string[] files, CancellationToken token)
+        internal async Task<Exception?> UploadClipboardFilesAsync(TaskSettings taskSettings, string[] files, CancellationToken token)
         {
             var uploadProcessor = new UploadJobProcessor();
+            var failures = new List<Exception>();
             TaskInfo? lastInfo = null;
+            TaskInfo? lastSuccessfulInfo = null;
 
             foreach (var filePath in files)
             {
-                if (token.IsCancellationRequested)
-                {
-                    return;
-                }
+                token.ThrowIfCancellationRequested();
 
                 if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
                 {
+                    failures.Add(new FileNotFoundException("The file to upload no longer exists.", filePath));
                     continue;
                 }
 
@@ -108,13 +115,29 @@ namespace XerahS.Core.Tasks
                 };
 
                 await uploadProcessor.ProcessAsync(fileInfo, token);
+                token.ThrowIfCancellationRequested();
                 lastInfo = fileInfo;
+                if (UploadJobProcessor.IsSuccessfulUploadResult(fileInfo.Result))
+                {
+                    lastSuccessfulInfo = fileInfo;
+                }
+                else
+                {
+                    string message = fileInfo.Result?.Response ?? "Uploader returned no result.";
+                    failures.Add(new InvalidOperationException($"Upload failed for {Path.GetFileName(filePath)}: {message}"));
+                }
             }
 
-            if (lastInfo != null)
+            token.ThrowIfCancellationRequested();
+            var completedInfo = lastSuccessfulInfo ?? lastInfo;
+            if (completedInfo != null)
             {
-                ApplyLastClipboardUploadInfo(Info, lastInfo);
+                ApplyLastClipboardUploadInfo(Info, completedInfo);
             }
+
+            return failures.Count > 0
+                ? new AggregateException("One or more clipboard file uploads failed.", failures)
+                : null;
         }
 
         internal static void ApplyLastClipboardUploadInfo(TaskInfo destination, TaskInfo lastInfo)

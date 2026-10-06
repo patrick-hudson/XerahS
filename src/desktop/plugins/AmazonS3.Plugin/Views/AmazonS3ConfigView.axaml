@@ -230,6 +230,15 @@
                        HorizontalAlignment="Left"/>
         </StackPanel>
 
+        <StackPanel Spacing="5">
+            <CheckBox IsChecked="{Binding AvoidOverwritingExistingFiles}">
+                <TextBlock Text="Add a suffix when a filename already exists" TextWrapping="Wrap"/>
+            </CheckBox>
+            <TextBlock Text="Keep the original name when available. Turning this off allows existing files to be replaced."
+                       FontSize="11" TextWrapping="Wrap" MaxWidth="420"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+        </StackPanel>
+
         <!-- Storage Class -->
         <StackPanel Spacing="5">
             <TextBlock Text="Storage Class" FontWeight="Medium"/>

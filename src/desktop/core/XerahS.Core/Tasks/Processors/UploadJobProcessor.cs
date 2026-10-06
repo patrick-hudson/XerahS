@@ -636,7 +636,7 @@ namespace XerahS.Core.Tasks.Processors
             }
         }
 
-        private static bool IsSuccessfulUploadResult(UploadResult? result)
+        internal static bool IsSuccessfulUploadResult(UploadResult? result)
         {
             return result != null && (result.IsSuccess || (!result.IsError && !string.IsNullOrWhiteSpace(result.URL)));
         }

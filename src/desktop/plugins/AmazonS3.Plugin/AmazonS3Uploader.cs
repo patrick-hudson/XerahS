@@ -143,62 +143,78 @@ public class AmazonS3Uploader : FileUploader
     private UploadResult UploadSinglePut(Stream stream, string fileName)
     {
         (string uploadPath, string resultUrl, string contentType) = CreateUploadContext(fileName);
-        OnEarlyURLCopyRequested(resultUrl);
+        if (!_config.AvoidOverwritingExistingFiles)
+        {
+            OnEarlyURLCopyRequested(resultUrl);
+        }
 
         IsUploading = true;
         StopUploadRequested = false;
 
         using CancellationTokenSource sdkCancellationTokenSource = new();
         _sdkCancellationTokenSource = sdkCancellationTokenSource;
-        ProgressManager progressManager = new(stream.Length);
+        long initialStreamPosition = stream.CanSeek ? stream.Position : 0;
 
         try
         {
             using IAmazonS3 client = CreateS3Client();
-            PutObjectRequest request = new()
+            return UploadWithNameRetries(uploadPath, sdkCancellationTokenSource.Token, candidate =>
             {
-                BucketName = _config.BucketName,
-                Key = uploadPath,
-                InputStream = stream,
-                AutoCloseStream = false,
-                AutoResetStreamPosition = false,
-                ContentType = contentType,
-                StorageClass = MapStorageClass(_config.StorageClass),
-                DisablePayloadSigning = !_config.SignedPayload
-            };
-
-            if (_config.SetPublicACL)
-            {
-                request.CannedACL = S3CannedACL.PublicRead;
-            }
-
-            request.StreamTransferProgress += (_, args) =>
-            {
-                if (args.IncrementTransferred > 0 && AllowReportProgress && progressManager.UpdateProgress(args.IncrementTransferred))
+                if (candidate != uploadPath && !stream.CanSeek)
                 {
-                    OnProgressChanged(progressManager);
+                    throw new InvalidOperationException("Cannot retry a filename collision with a non-seekable stream.");
                 }
-            };
-
-            PutObjectResponse response = Task.Run(
-                () => client.PutObjectAsync(request, sdkCancellationTokenSource.Token),
-                sdkCancellationTokenSource.Token).GetAwaiter().GetResult();
-
-            if ((int)response.HttpStatusCode is >= 200 and < 300)
-            {
-                var putResult = new UploadResult
+                if (stream.CanSeek)
                 {
-                    IsSuccess = true,
-                    Response = response.ETag,
-                    URL = resultUrl
+                    stream.Position = initialStreamPosition;
+                }
+                ProgressManager progressManager = new(stream.Length);
+                PutObjectRequest request = new()
+                {
+                    BucketName = _config.BucketName,
+                    Key = candidate,
+                    IfNoneMatch = _config.AvoidOverwritingExistingFiles ? "*" : null,
+                    InputStream = stream,
+                    AutoCloseStream = false,
+                    AutoResetStreamPosition = false,
+                    ContentType = contentType,
+                    StorageClass = MapStorageClass(_config.StorageClass),
+                    DisablePayloadSigning = !_config.SignedPayload
                 };
-                AddObjectMetadata(putResult, uploadPath);
-                return putResult;
-            }
 
-            string responseMessage = $"Upload to Amazon S3 failed ({(int)response.HttpStatusCode}).";
-            Errors.Add(responseMessage);
-            return new UploadResult { Response = responseMessage };
+                if (_config.SetPublicACL)
+                {
+                    request.CannedACL = S3CannedACL.PublicRead;
+                }
+
+                request.StreamTransferProgress += (_, args) =>
+                {
+                    if (args.IncrementTransferred > 0 && AllowReportProgress && progressManager.UpdateProgress(args.IncrementTransferred))
+                    {
+                        OnProgressChanged(progressManager);
+                    }
+                };
+
+                PutObjectResponse response = Task.Run(
+                    () => client.PutObjectAsync(request, sdkCancellationTokenSource.Token),
+                    sdkCancellationTokenSource.Token).GetAwaiter().GetResult();
+
+                if ((int)response.HttpStatusCode is >= 200 and < 300)
+                {
+                    var putResult = new UploadResult
+                    {
+                        IsSuccess = true,
+                        Response = response.ETag,
+                        URL = GenerateURL(candidate)
+                    };
+                    AddObjectMetadata(putResult, candidate);
+                    return putResult;
+                }
+
+                string responseMessage = $"Upload to Amazon S3 failed ({(int)response.HttpStatusCode}).";
+                Errors.Add(responseMessage);
+                return new UploadResult { Response = responseMessage };
+            });
         }
         catch (OperationCanceledException)
         {
@@ -248,7 +264,10 @@ public class AmazonS3Uploader : FileUploader
         }
 
         (string uploadPath, string resultUrl, string contentType) = CreateUploadContext(fileName);
-        OnEarlyURLCopyRequested(resultUrl);
+        if (!_config.AvoidOverwritingExistingFiles)
+        {
+            OnEarlyURLCopyRequested(resultUrl);
+        }
 
         IsUploading = true;
         StopUploadRequested = false;
@@ -256,61 +275,64 @@ public class AmazonS3Uploader : FileUploader
         using CancellationTokenSource multipartCancellationTokenSource = new CancellationTokenSource();
         _sdkCancellationTokenSource = multipartCancellationTokenSource;
 
-        ProgressManager progressManager = new ProgressManager(fileInfo.Length);
-        long reportedBytes = 0;
-        object progressSync = new object();
-
         try
         {
             using IAmazonS3 client = CreateS3Client();
 
-            S3MultipartUploadOptions options = new S3MultipartUploadOptions
+            return UploadWithNameRetries(uploadPath, multipartCancellationTokenSource.Token, candidate =>
             {
-                BucketName = _config.BucketName,
-                ObjectKey = uploadPath,
-                URL = resultUrl,
-                ContentType = contentType,
-                PartSizeBytes = _config.MultipartPartSizeBytes,
-                MaxConcurrency = _config.MultipartMaxConcurrency,
-                RetryPolicy = new XerahS.Uploaders.Multipart.RetryPolicy(),
-                StorageClass = _config.StorageClass,
-                SetPublicAcl = _config.SetPublicACL
-            };
-
-            options.Validate();
-
-            InlineProgress<MultipartUploadProgress> progressReporter = new(snapshot =>
-            {
-                long delta;
-
-                lock (progressSync)
+                ProgressManager progressManager = new(fileInfo.Length);
+                long reportedBytes = 0;
+                object progressSync = new();
+                S3MultipartUploadOptions options = new S3MultipartUploadOptions
                 {
-                    delta = snapshot.BytesUploaded - reportedBytes;
-                    reportedBytes = snapshot.BytesUploaded;
+                    BucketName = _config.BucketName,
+                    ObjectKey = candidate,
+                    URL = GenerateURL(candidate),
+                    ContentType = contentType,
+                    PartSizeBytes = _config.MultipartPartSizeBytes,
+                    MaxConcurrency = _config.MultipartMaxConcurrency,
+                    RetryPolicy = new XerahS.Uploaders.Multipart.RetryPolicy(),
+                    StorageClass = _config.StorageClass,
+                    SetPublicAcl = _config.SetPublicACL,
+                    AvoidOverwritingExistingFiles = _config.AvoidOverwritingExistingFiles
+                };
 
-                    if (delta > 0 && AllowReportProgress && progressManager.UpdateProgress(delta))
+                options.Validate();
+
+                InlineProgress<MultipartUploadProgress> progressReporter = new(snapshot =>
+                {
+                    long delta;
+
+                    lock (progressSync)
                     {
-                        OnProgressChanged(progressManager);
+                        delta = snapshot.BytesUploaded - reportedBytes;
+                        reportedBytes = snapshot.BytesUploaded;
+
+                        if (delta > 0 && AllowReportProgress && progressManager.UpdateProgress(delta))
+                        {
+                            OnProgressChanged(progressManager);
+                        }
                     }
+                });
+
+                MultipartUploadResult multipartResult = Task.Run(
+                    () => new S3MultipartUploader(client).UploadAsync(filePath, options, progressReporter, multipartCancellationTokenSource.Token),
+                    multipartCancellationTokenSource.Token).GetAwaiter().GetResult();
+
+                var multipartUploadResult = new UploadResult
+                {
+                    IsSuccess = multipartResult.IsSuccess,
+                    Response = multipartResult.ETag,
+                    URL = multipartResult.URL ?? GenerateURL(candidate)
+                };
+                if (multipartResult.IsSuccess)
+                {
+                    AddObjectMetadata(multipartUploadResult, candidate);
                 }
+
+                return multipartUploadResult;
             });
-
-            MultipartUploadResult multipartResult = Task.Run(
-                () => new S3MultipartUploader(client).UploadAsync(filePath, options, progressReporter, multipartCancellationTokenSource.Token),
-                multipartCancellationTokenSource.Token).GetAwaiter().GetResult();
-
-            var multipartUploadResult = new UploadResult
-            {
-                IsSuccess = multipartResult.IsSuccess,
-                Response = multipartResult.ETag,
-                URL = multipartResult.URL ?? resultUrl
-            };
-            if (multipartResult.IsSuccess)
-            {
-                AddObjectMetadata(multipartUploadResult, uploadPath);
-            }
-
-            return multipartUploadResult;
         }
         catch (OperationCanceledException)
         {
@@ -336,6 +358,31 @@ public class AmazonS3Uploader : FileUploader
         {
             _sdkCancellationTokenSource = null;
             IsUploading = false;
+        }
+    }
+
+    private UploadResult UploadWithNameRetries(string originalKey, CancellationToken cancellationToken, Func<string, UploadResult> upload)
+    {
+        string candidate = originalKey;
+        for (int attempt = 0; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            UploadResult result;
+            try
+            {
+                result = upload(candidate);
+            }
+            catch (AmazonS3Exception ex) when (_config.AvoidOverwritingExistingFiles &&
+                S3ObjectKey.IsConditionalConflict(ex) && attempt < S3ObjectKey.MaximumUploadAttempts - 1)
+            {
+                candidate = S3ObjectKey.WithRandomSuffix(originalKey);
+                continue;
+            }
+            if (_config.AvoidOverwritingExistingFiles && result.IsSuccess && !string.IsNullOrEmpty(result.URL))
+            {
+                OnEarlyURLCopyRequested(result.URL);
+            }
+            return result;
         }
     }
 

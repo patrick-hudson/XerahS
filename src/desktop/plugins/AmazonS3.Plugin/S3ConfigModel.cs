@@ -56,6 +56,8 @@ public class S3ConfigModel
 
     public bool SignedPayload { get; set; } = true;
 
+    public bool AvoidOverwritingExistingFiles { get; set; } = true;
+
     public string Endpoint { get; set; } = "s3.amazonaws.com";
 
     public bool RemoveExtensionImage { get; set; } = false;

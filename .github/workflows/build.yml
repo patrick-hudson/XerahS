@@ -1,0 +1,246 @@
+name: Build Linux
+
+on:
+  pull_request:
+    branches: [develop]
+  push:
+    branches: [develop]
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: Version validated from Directory.Build.props
+        value: ${{ jobs.verify.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'patrick-hudson/XerahS'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: 10.0.x
+
+      - id: version
+        name: Validate app version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import xml.etree.ElementTree as ET
+          version = ET.parse('Directory.Build.props').findtext('./PropertyGroup/Version', '').strip()
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise SystemExit('Directory.Build.props must contain an x.y.z app version')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={version}\n')
+          PY
+
+      - name: Install test runtime dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1 libx11-6 libx11-xcb1 libice6 libsm6 libgl1 libxcursor1 libxrandr2 libxi6 libxinerama1
+
+      - name: Check Markdown and release validator tests
+        shell: bash
+        run: |
+          python3 scripts/check-markdown-mojibake.py
+          python3 -B -m unittest discover -s build/ci -p 'test_*.py'
+
+      - name: Build complete Release solution and run every test suite
+        shell: bash
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xerahs-tests/config
+          XDG_DATA_HOME: ${{ runner.temp }}/xerahs-tests/data
+          XDG_STATE_HOME: ${{ runner.temp }}/xerahs-tests/state
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          pwsh -NoProfile -File build/verify.ps1 FullVerification -Configuration Release 2>&1 | tee build/logs/full-verification.log
+
+      - name: Upload verification log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verification-log
+          path: build/logs/full-verification.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  package:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-24.04
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+            deb_arch: arm64
+            rpm_arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      RID: ${{ matrix.rid }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+      RPM_ARCH: ${{ matrix.rpm_arch }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install packaging and smoke-test dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm desktop-file-utils squashfs-tools file xvfb xauth libfontconfig1 libx11-6 libx11-xcb1 libice6 libsm6 libgl1 libxcursor1 libxrandr2 libxi6 libxinerama1
+
+      - name: Package the pinned source revision
+        shell: bash
+        env:
+          XERAHS_ARCHITECTURES: ${{ matrix.rid }}
+          XERAHS_ALLOW_NO_OMASNAP: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          bash build/linux/package-linux.sh 2>&1 | tee "build/logs/package-${RID}.log"
+
+      - name: Validate installers and AppImage startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="dist/XerahS-${VERSION}-${RID}"
+          test "$(dpkg-deb -f "${base}.deb" Version)" = "$VERSION"
+          test "$(dpkg-deb -f "${base}.deb" Architecture)" = "$DEB_ARCH"
+          test "$(rpm -qp --qf '%{VERSION}' "${base}.rpm")" = "$VERSION"
+          test "$(rpm -qp --qf '%{ARCH}' "${base}.rpm")" = "$RPM_ARCH"
+          dpkg-deb --contents "${base}.deb" > "build/logs/deb-${RID}.contents"
+          grep -Eq '(^|/)usr/lib/xerahs/XerahS$' "build/logs/deb-${RID}.contents"
+          tar -tzf "${base}.tar.gz" > "build/logs/tar-${RID}.contents"
+          grep -Eq '(^|/)XerahS$' "build/logs/tar-${RID}.contents"
+          grep -Eq '(^|/)Plugins/amazons3/plugin.json$' "build/logs/tar-${RID}.contents"
+          python3 - "${base}.tar.gz" <<'PY'
+          import sys
+          import tarfile
+          with tarfile.open(sys.argv[1], 'r:gz') as archive:
+              for name in ('XerahS', 'xerahs-watchfolder-daemon', 'omaxerahs'):
+                  entry = archive.getmember(name)
+                  if not entry.isfile() or entry.mode & 0o777 != 0o755:
+                      raise SystemExit(f'{name} must be an executable regular file (0755) in the portable tarball')
+          PY
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          cp "${base}.AppImage" "$workdir/XerahS.AppImage"
+          chmod +x "$workdir/XerahS.AppImage"
+          (cd "$workdir" && ./XerahS.AppImage --appimage-extract > /dev/null)
+          payload="$workdir/squashfs-root"
+          test -x "$payload/AppRun"
+          test -x "$payload/usr/lib/xerahs/XerahS"
+          test -f "$payload/usr/lib/xerahs/Plugins/amazons3/plugin.json"
+          desktop-file-validate "$payload/xerahs.desktop"
+          mkdir -p "$workdir/config" "$workdir/data" "$workdir/state" "$workdir/runtime"
+          chmod 700 "$workdir/runtime"
+          set +e
+          XDG_CONFIG_HOME="$workdir/config" XDG_DATA_HOME="$workdir/data" XDG_STATE_HOME="$workdir/state" XDG_RUNTIME_DIR="$workdir/runtime" \
+            timeout --kill-after=5s 25s xvfb-run -a "$payload/AppRun" > "build/logs/startup-${RID}.log" 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+            cat "build/logs/startup-${RID}.log"
+            echo "AppImage startup failed with exit $status" >&2
+            exit 1
+          fi
+          if grep -Eq 'XamlLoadException|Unhandled exception|Segmentation fault' "build/logs/startup-${RID}.log"; then
+            cat "build/logs/startup-${RID}.log"
+            exit 1
+          fi
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages-${{ matrix.rid }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          path: |
+            dist/XerahS-${{ env.VERSION }}-${{ matrix.rid }}.tar.gz
+            dist/XerahS-${{ env.VERSION }}-${{ matrix.rid }}.deb
+            dist/XerahS-${{ env.VERSION }}-${{ matrix.rid }}.rpm
+            dist/XerahS-${{ env.VERSION }}-${{ matrix.rid }}.AppImage
+
+      - name: Upload packaging and startup logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packaging-log-${{ matrix.rid }}
+          path: build/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  assets:
+    needs: [verify, package]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: linux-packages-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate both architectures and generate SHA-256 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build/ci/validate_release_assets.py --platform linux --assets-dir release-assets --version "$VERSION" --metadata-output release-assets/release-metadata.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path('release-assets')
+          manifest = root / 'release-metadata.json'
+          metadata = json.loads(manifest.read_text(encoding='utf-8'))
+          metadata['source_commit'] = os.environ['GITHUB_SHA']
+          metadata['repository'] = os.environ['GITHUB_REPOSITORY']
+          manifest.write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
+          PY
+          (cd release-assets && sha256sum XerahS-* release-metadata.json > SHA256SUMS && sha256sum --check SHA256SUMS)
+
+      - name: Upload complete Linux release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-release
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

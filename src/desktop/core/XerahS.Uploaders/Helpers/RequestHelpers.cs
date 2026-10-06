@@ -161,7 +161,7 @@ namespace XerahS.Uploaders
 
         public static byte[] MakeInputContent(string boundary, string name, string value)
         {
-            string content = $"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n";
+            string content = $"--{boundary}\r\nContent-Disposition: form-data; name=\"{EncodeMultipartHeaderParameter(name)}\"\r\n\r\n{value}\r\n";
             return Encoding.UTF8.GetBytes(content);
         }
 
@@ -198,8 +198,26 @@ namespace XerahS.Uploaders
         public static byte[] MakeFileInputContentOpen(string boundary, string fileFormName, string fileName)
         {
             string mimeType = MimeTypes.GetMimeTypeFromFileName(fileName);
-            string content = $"--{boundary}\r\nContent-Disposition: form-data; name=\"{fileFormName}\"; filename=\"{fileName}\"\r\nContent-Type: {mimeType}\r\n\r\n";
+            string content = $"--{boundary}\r\nContent-Disposition: form-data; name=\"{EncodeMultipartHeaderParameter(fileFormName)}\"; filename=\"{EncodeMultipartHeaderParameter(fileName)}\"\r\nContent-Type: {mimeType}\r\n\r\n";
             return Encoding.UTF8.GetBytes(content);
+        }
+
+        private static string EncodeMultipartHeaderParameter(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            StringBuilder encoded = new(value.Length);
+            foreach (char character in value)
+            {
+                if (character is '"' or '\\' || char.IsControl(character))
+                {
+                    encoded.Append(Uri.EscapeDataString(character.ToString()));
+                }
+                else
+                {
+                    encoded.Append(character);
+                }
+            }
+            return encoded.ToString();
         }
 
         public static byte[] MakeRelatedFileInputContentOpen(string boundary, string contentType, string relatedData, string fileName)

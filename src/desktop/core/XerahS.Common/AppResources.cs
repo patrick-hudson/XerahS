@@ -51,6 +51,9 @@ namespace XerahS.Common
             return version != null ? $"{version.Major}.{version.Minor}.{version.Build}" : "v0.0.0";
         }
         
+        public const string DefaultUpdateRepositoryOwner = "patrick-hudson";
+        public const string DefaultUpdateRepositoryName = "XerahS";
+
         public const string HistoryFolderName = "History";
         public const string ScreenshotsFolderName = "Screenshots";
         public const string ScreencastsFolderName = "Screencasts";

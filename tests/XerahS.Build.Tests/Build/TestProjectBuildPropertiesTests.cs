@@ -52,11 +52,14 @@ public class TestProjectBuildPropertiesTests
     {
         XDocument props = LoadRepositoryXml("Directory.Build.props");
         XElement property = props.Descendants("AssembleProduct").Single();
+        XElement webUiProperty = props.Descendants("BuildWebUI").Single();
 
         Assert.Multiple(() =>
         {
             Assert.That(property.Value, Is.EqualTo("false"));
-            Assert.That((string?)property.Attribute("Condition"), Does.Contain("$(AssembleProduct)"));
+            Assert.That((string?)property.Attribute("Condition"), Is.EqualTo("'$(AssembleProduct)' == ''"));
+            Assert.That(webUiProperty.Value, Is.EqualTo("$(AssembleProduct)"));
+            Assert.That((string?)webUiProperty.Attribute("Condition"), Is.EqualTo("'$(BuildWebUI)' == ''"));
         });
     }
 
@@ -65,14 +68,45 @@ public class TestProjectBuildPropertiesTests
     public void DesktopProductProjects_DevStagingTargets_RequireProductAssembly(string relativeProjectPath)
     {
         XDocument project = LoadRepositoryXml(relativeProjectPath);
-        string[] targetNames = ["BuildWatchFolderDaemonForDev", "CopyVideoEditorWebUiForDev", "BuildPlugins"];
+        string[] targetNames = ["BuildWatchFolderDaemonForDev", "BuildPlugins"];
 
         foreach (string targetName in targetNames)
         {
             XElement target = project.Descendants("Target")
                 .Single(element => string.Equals((string?)element.Attribute("Name"), targetName, StringComparison.Ordinal));
-            Assert.That((string?)target.Attribute("Condition"), Does.Contain("$(AssembleProduct)"), targetName);
+            Assert.That((string?)target.Attribute("Condition"), Does.Contain("'$(AssembleProduct)' == 'true'"), targetName);
         }
+
+        XElement pluginTarget = project.Descendants("Target")
+            .Single(element => (string?)element.Attribute("Name") == "BuildPlugins");
+        Assert.Multiple(() =>
+        {
+            Assert.That((string?)pluginTarget.Attribute("Condition"), Does.Contain("'$(SkipBundlePlugins)' != 'true'"));
+            Assert.That((string?)pluginTarget.Attribute("Condition"), Does.Contain("'$(EnableAppDrivenPluginBuild)' == 'true'"));
+        });
+    }
+
+    [TestCase("src/desktop/app/XerahS.App/XerahS.App.csproj")]
+    [TestCase("src/desktop/cli/XerahS.CLI/XerahS.CLI.csproj")]
+    public void DesktopProductProjects_PluginBuild_IsDisabledOutsideProductAssembly(string relativeProjectPath)
+    {
+        XDocument project = LoadRepositoryXml(relativeProjectPath);
+        XElement productDefault = project.Descendants("EnableAppDrivenPluginBuild")
+            .Single(element => element.Value == "true");
+        XElement compileDefault = project.Descendants("EnableAppDrivenPluginBuild")
+            .Single(element => element.Value == "false");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That((string?)productDefault.Attribute("Condition"),
+                Is.EqualTo("'$(EnableAppDrivenPluginBuild)' == '' And '$(AssembleProduct)' == 'true'"));
+            Assert.That((string?)compileDefault.Attribute("Condition"),
+                Is.EqualTo("'$(EnableAppDrivenPluginBuild)' == ''"));
+            var defaults = project.Descendants("EnableAppDrivenPluginBuild").ToList();
+            Assert.That(defaults.Count, Is.EqualTo(2));
+            Assert.That(defaults.IndexOf(productDefault), Is.LessThan(defaults.IndexOf(compileDefault)),
+                "The product default must run before the fallback consumes the unset property.");
+        });
     }
 
     [Test]
@@ -103,15 +137,20 @@ public class TestProjectBuildPropertiesTests
     }
 
     [Test]
-    public void XerahSTests_AppAndCliProjectReferences_DisableAppDrivenPluginBuild()
+    public void XerahSTests_AppAndCliProjectReferences_ReuseCompileOnlyConfiguration()
     {
-        string testProjectPath = Path.GetFullPath(Path.Combine(TestContext.CurrentContext.TestDirectory,
-            "../../../../../tests/XerahS.Tests/XerahS.Tests.csproj"));
+        XDocument project = LoadRepositoryXml("tests/XerahS.Tests/XerahS.Tests.csproj");
 
-        XDocument project = XDocument.Load(testProjectPath);
+        Assert.Multiple(() =>
+        {
+            Assert.That(project.Descendants("AssembleProduct"), Is.Empty,
+                "Test builds must inherit the compile-only root default.");
+            Assert.That(project.Descendants("EnableAppDrivenPluginBuild").Single().Value, Is.EqualTo("false"));
+            Assert.That(project.Descendants("SkipBundlePlugins").Single().Value, Is.EqualTo("true"));
+        });
 
-        AssertProjectReferenceDisablesAppDrivenPluginBuild(project, "XerahS.App.csproj");
-        AssertProjectReferenceDisablesAppDrivenPluginBuild(project, "XerahS.CLI.csproj");
+        AssertProjectReferenceReusesBuildConfiguration(project, "XerahS.App.csproj");
+        AssertProjectReferenceReusesBuildConfiguration(project, "XerahS.CLI.csproj");
     }
 
     [Test]
@@ -177,18 +216,17 @@ public class TestProjectBuildPropertiesTests
         });
     }
 
-    private static void AssertProjectReferenceDisablesAppDrivenPluginBuild(XDocument project, string projectFileName)
+    private static void AssertProjectReferenceReusesBuildConfiguration(XDocument project, string projectFileName)
     {
         XElement projectReference = project.Descendants("ProjectReference")
             .Single(element => ((string?)element.Attribute("Include"))?.EndsWith(projectFileName, StringComparison.OrdinalIgnoreCase) == true);
 
-        string? additionalProperties = (string?)projectReference.Attribute("AdditionalProperties");
-
+        // Reference-specific globals create another UI/Core build configuration
+        // that writes to the same obj directories as the test project's references.
         Assert.Multiple(() =>
         {
-            Assert.That(additionalProperties, Does.Contain("AssembleProduct=false"));
-            Assert.That(additionalProperties, Does.Contain("EnableAppDrivenPluginBuild=false"));
-            Assert.That(additionalProperties, Does.Contain("SkipBundlePlugins=true"));
+            Assert.That(projectReference.Attribute("AdditionalProperties"), Is.Null, projectFileName);
+            Assert.That(projectReference.Attribute("GlobalPropertiesToRemove"), Is.Null, projectFileName);
         });
     }
 
