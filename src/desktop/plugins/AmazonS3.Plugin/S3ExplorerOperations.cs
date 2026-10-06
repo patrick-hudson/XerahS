@@ -41,24 +41,51 @@ internal sealed class S3ExplorerOperations(IAmazonS3 client, S3ConfigModel confi
 
     public async Task UploadAsync(string key, Stream content, CancellationToken cancellation)
     {
-        var request = new TransferUtilityUploadRequest
-        {
-            BucketName = config.BucketName,
-            Key = key,
-            InputStream = content,
-            AutoCloseStream = false,
-            ContentType = MimeTypes.GetMimeTypeFromFileName(key),
-            StorageClass = AmazonS3Uploader.MapStorageClass(config.StorageClass),
-            DisablePayloadSigning = !config.SignedPayload,
-        };
-
-        if (config.SetPublicACL)
-        {
-            request.CannedACL = S3CannedACL.PublicRead;
-        }
-
+        long? initialPosition = content.CanSeek ? content.Position : null;
+        string candidate = key;
         using var transfer = new TransferUtility(client);
-        await transfer.UploadAsync(request, cancellation);
+
+        for (int attempt = 0; ; attempt++)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            if (initialPosition.HasValue)
+            {
+                content.Position = initialPosition.Value;
+            }
+            else if (attempt > 0)
+            {
+                throw new InvalidOperationException("Cannot retry a non-seekable upload after a filename conflict.");
+            }
+
+            var request = new TransferUtilityUploadRequest
+            {
+                BucketName = config.BucketName,
+                Key = candidate,
+                InputStream = content,
+                AutoCloseStream = false,
+                AutoResetStreamPosition = false,
+                IfNoneMatch = config.AvoidOverwritingExistingFiles ? "*" : null,
+                ContentType = MimeTypes.GetMimeTypeFromFileName(candidate),
+                StorageClass = AmazonS3Uploader.MapStorageClass(config.StorageClass),
+                DisablePayloadSigning = !config.SignedPayload,
+            };
+
+            if (config.SetPublicACL)
+            {
+                request.CannedACL = S3CannedACL.PublicRead;
+            }
+
+            try
+            {
+                await transfer.UploadAsync(request, cancellation);
+                return;
+            }
+            catch (AmazonS3Exception ex) when (config.AvoidOverwritingExistingFiles &&
+                S3ObjectKey.IsConditionalConflict(ex) && attempt < S3ObjectKey.MaximumUploadAttempts - 1)
+            {
+                candidate = S3ObjectKey.WithRandomSuffix(key);
+            }
+        }
     }
 
     /// <summary>S3 folders are zero-byte objects whose key ends with "/".</summary>

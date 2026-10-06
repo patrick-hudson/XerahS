@@ -82,3 +82,20 @@ updater's install step still uses Windows installer arguments, so install a newe
 The package upgrades the existing `xerahs` installation and keeps the user's
 settings outside the installation directory. AppImages run separately from the
 installed package.
+
+## S3 filename collisions
+
+S3 destinations enable **Add a suffix when a filename already exists** by
+default, including saved destinations that do not yet have this setting. This
+applies to every uploaded file type. The first upload keeps its original name;
+a duplicate gets a random suffix before its final extension, such as
+`report-a1b2c3d4e5f6.pdf`. Files without extensions also receive a suffix. The
+configured object prefix is preserved, and the returned URL uses the successful
+object name.
+
+Conditional S3 writes protect both single and multipart uploads against races.
+Cleanup is attempted before retrying multipart uploads with a new name. Native
+file uploads stop if aborting a conflicting upload fails. The Media Browser
+retains the AWS SDK's best-effort cleanup. Servers that reject conditional writes
+fail the upload instead of falling back to an unconditional overwrite. Turning the setting off explicitly restores overwrite
+behavior.

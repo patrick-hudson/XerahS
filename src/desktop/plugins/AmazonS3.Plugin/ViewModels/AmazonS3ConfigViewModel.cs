@@ -116,6 +116,9 @@ public partial class AmazonS3ConfigViewModel : ObservableObject, IUploaderConfig
     private bool _signedPayload = true;
 
     [ObservableProperty]
+    private bool _avoidOverwritingExistingFiles = true;
+
+    [ObservableProperty]
     private string? _statusMessage;
 
     [ObservableProperty]
@@ -797,6 +800,7 @@ public partial class AmazonS3ConfigViewModel : ObservableObject, IUploaderConfig
                 SetPublicACL = config.SetPublicACL;
                 SetPublicPolicy = config.SetPublicPolicy;
                 SignedPayload = config.SignedPayload;
+                AvoidOverwritingExistingFiles = config.AvoidOverwritingExistingFiles;
                 RemoveExtensionImage = config.RemoveExtensionImage;
                 RemoveExtensionVideo = config.RemoveExtensionVideo;
                 RemoveExtensionText = config.RemoveExtensionText;
@@ -877,6 +881,7 @@ public partial class AmazonS3ConfigViewModel : ObservableObject, IUploaderConfig
             SetPublicACL = SetPublicACL,
             SetPublicPolicy = SetPublicPolicy,
             SignedPayload = SignedPayload,
+            AvoidOverwritingExistingFiles = AvoidOverwritingExistingFiles,
             RemoveExtensionImage = RemoveExtensionImage,
             RemoveExtensionVideo = RemoveExtensionVideo,
             RemoveExtensionText = RemoveExtensionText,
