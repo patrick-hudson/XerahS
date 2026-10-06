@@ -167,7 +167,8 @@ namespace XerahS.Core.Tasks.Pipeline
                         return PipelineStageResult.Failed;
                     }
 
-                    if (!_workerTask.TryLoadClipboardContent(taskSettings, metadata, out var clipboardFiles))
+                    var (loaded, clipboardFiles) = await _workerTask.TryLoadClipboardContentAsync(taskSettings, metadata, token);
+                    if (!loaded)
                     {
                         context.Status = TaskStatus.Failed;
                         context.Error = new Exception("Clipboard is empty or contains unsupported data.");
@@ -176,7 +177,13 @@ namespace XerahS.Core.Tasks.Pipeline
 
                     if (clipboardFiles != null && clipboardFiles.Length > 1)
                     {
-                        await _workerTask.UploadClipboardFilesAsync(taskSettings, clipboardFiles, token);
+                        var batchError = await _workerTask.UploadClipboardFilesAsync(taskSettings, clipboardFiles, token);
+                        if (batchError != null)
+                        {
+                            context.Status = TaskStatus.Failed;
+                            context.Error = new InvalidOperationException(batchError.Message, batchError);
+                            return PipelineStageResult.Failed;
+                        }
                         return PipelineStageResult.Stop;
                     }
                     break;
