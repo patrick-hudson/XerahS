@@ -143,6 +143,15 @@ jobs:
           tar -tzf "${base}.tar.gz" > "build/logs/tar-${RID}.contents"
           grep -Eq '(^|/)XerahS$' "build/logs/tar-${RID}.contents"
           grep -Eq '(^|/)Plugins/amazons3/plugin.json$' "build/logs/tar-${RID}.contents"
+          python3 - "${base}.tar.gz" <<'PY'
+          import sys
+          import tarfile
+          with tarfile.open(sys.argv[1], 'r:gz') as archive:
+              for name in ('XerahS', 'xerahs-watchfolder-daemon', 'omaxerahs'):
+                  entry = archive.getmember(name)
+                  if not entry.isfile() or entry.mode & 0o777 != 0o755:
+                      raise SystemExit(f'{name} must be an executable regular file (0755) in the portable tarball')
+          PY
           workdir="$(mktemp -d)"
           trap 'rm -rf "$workdir"' EXIT
           cp "${base}.AppImage" "$workdir/XerahS.AppImage"
