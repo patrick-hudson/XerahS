@@ -1,0 +1,110 @@
+name: Release Linux
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the current committed version from develop (false builds a preview)
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'patrick-hudson/XerahS'
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  publish:
+    if: github.repository == 'patrick-hudson/XerahS' && ((github.event_name == 'push' && github.ref_type == 'tag') || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify fork, release ref, and source ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'patrick-hudson/XerahS'
+          tag="v${VERSION}"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            test "$GITHUB_REF_TYPE" = tag
+            test "$GITHUB_REF_NAME" = "$tag"
+          else
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            test "$GITHUB_REF" = refs/heads/develop
+          fi
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/develop
+          if git rev-parse --verify "refs/tags/${tag}^{commit}" > /dev/null 2>&1; then
+            test "$(git rev-parse "refs/tags/${tag}^{commit}")" = "$GITHUB_SHA"
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-release
+          path: release-assets
+
+      - name: Verify checked bundle belongs to this exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-assets && sha256sum --check SHA256SUMS)
+          python3 - <<'PY'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          metadata = json.loads(Path('release-assets/release-metadata.json').read_text(encoding='utf-8'))
+          version = ET.parse('Directory.Build.props').findtext('./PropertyGroup/Version', '').strip()
+          if version != os.environ['VERSION'] or metadata['version'] != version:
+              raise SystemExit('Release and source versions differ')
+          if metadata['source_commit'] != os.environ['GITHUB_SHA'] or metadata['repository'] != os.environ['GITHUB_REPOSITORY']:
+              raise SystemExit('Release bundle belongs to another source commit or repository')
+          PY
+
+      - name: Create missing tag and publish a new fork release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $tag already exists; existing releases and assets are kept." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify "refs/tags/${tag}^{commit}" > /dev/null 2>&1; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${GITHUB_SHA}"
+          fi
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path('release-notes.md').write_text(
+              f"Linux build of the patrick-hudson/XerahS fork, version {os.environ['VERSION']}.\n\n"
+              f"Source commit: {os.environ['GITHUB_SHA']}.\n\n"
+              "Includes x64 and ARM64 tarballs, Debian packages, RPM packages, and AppImages. "
+              "Verify downloads against SHA256SUMS. Optional OmaSnap support for Hyprland is omitted; "
+              "XerahS keeps its existing Linux capture backends.\n",
+              encoding='utf-8',
+          )
+          PY
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag --title "XerahS ${VERSION} (Linux fork)" --notes-file release-notes.md --latest release-assets/*

@@ -34,17 +34,25 @@ EXPECTED_ASSETS = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate release assets for all desktop RIDs and generate metadata manifest."
+            "Validate desktop release assets and generate a SHA-256 metadata manifest."
         )
     )
     parser.add_argument("--assets-dir", required=True, help="Directory containing release files.")
     parser.add_argument("--version", required=True, help="Version string in x.y.z format.")
+    parser.add_argument(
+        "--platform", choices=("all", "linux"), default="all",
+        help="Release matrix to require (default: all desktop platforms).",
+    )
     parser.add_argument(
         "--metadata-output",
         required=True,
         help="Output JSON path for generated release metadata.",
     )
     return parser.parse_args()
+
+
+def expected_assets(platform: str) -> list[tuple[str, str, str]]:
+    return [asset for asset in EXPECTED_ASSETS if platform == "all" or asset[0] == platform]
 
 
 def compute_sha256(path: Path) -> str:
@@ -208,7 +216,7 @@ def main() -> int:
         "assets": [],
     }
 
-    for os_name, arch, extension in EXPECTED_ASSETS:
+    for os_name, arch, extension in expected_assets(args.platform):
         file_name = build_file_name(version, os_name, arch, extension)
         file_path = assets_dir / file_name
         if not file_path.is_file():

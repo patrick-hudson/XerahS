@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Archive fixtures for portable release validation; no release downloads required."""
 
+import hashlib
+import io
 import json
+import tarfile
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from validate_release_assets import (
     EXPECTED_ASSETS,
@@ -13,6 +17,8 @@ from validate_release_assets import (
     build_file_name,
     ensure_optional_omasnap,
     ensure_portable_zip_payload,
+    expected_assets,
+    main,
 )
 
 
@@ -121,6 +127,72 @@ class OptionalOmaSnapTests(unittest.TestCase):
 
     def test_unrelated_names_containing_omasnap_are_ignored(self):
         ensure_optional_omasnap(set(self.base) | {"docs/notomasnap/readme"}, Path("x.tar.gz"))
+
+
+class LinuxReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        self.manifest = self.root / 'metadata.json'
+        self.version = '1.2.3'
+
+    def write_linux_assets(self):
+        payload = {
+            'XerahS': b'app',
+            'xerahs-watchfolder-daemon': b'daemon',
+            'xerahs-watchfolder-daemon.runtimeconfig.json': b'{}',
+            'omaxerahs': b'helper',
+            'omaxerahs.runtimeconfig.json': b'{}',
+        }
+        for os_name, arch, extension in expected_assets('linux'):
+            path = self.root / build_file_name(self.version, os_name, arch, extension)
+            if extension == 'tar.gz':
+                with tarfile.open(path, 'w:gz') as archive:
+                    for name, data in payload.items():
+                        member = tarfile.TarInfo(name)
+                        member.size = len(data)
+                        archive.addfile(member, io.BytesIO(data))
+            else:
+                path.write_bytes(b'synthetic package fixture')
+
+    def run_validator(self, platform=None):
+        argv = ['validate_release_assets.py', '--assets-dir', str(self.root),
+                '--version', self.version, '--metadata-output', str(self.manifest)]
+        if platform is not None:
+            argv += ['--platform', platform]
+        with patch('sys.argv', argv):
+            return main()
+
+    def test_linux_requires_both_architectures_and_all_four_formats(self):
+        self.assertEqual(len(expected_assets('linux')), 8)
+        self.assertEqual({asset[1] for asset in expected_assets('linux')}, {'x64', 'arm64'})
+        self.assertEqual({asset[2] for asset in expected_assets('linux')}, {'tar.gz', 'deb', 'rpm', 'AppImage'})
+        self.assertEqual(expected_assets('all'), EXPECTED_ASSETS)
+
+    def test_linux_only_release_emits_real_sizes_and_sha256(self):
+        self.write_linux_assets()
+        self.assertEqual(self.run_validator('linux'), 0)
+        metadata = json.loads(self.manifest.read_text(encoding='utf-8'))
+        self.assertEqual(metadata['version'], self.version)
+        self.assertEqual(len(metadata['assets']), 8)
+        for asset in metadata['assets']:
+            data = (self.root / asset['file_name']).read_bytes()
+            self.assertEqual(asset['os'], 'linux')
+            self.assertEqual(asset['size_bytes'], len(data))
+            self.assertEqual(asset['sha256'], hashlib.sha256(data).hexdigest())
+
+    def test_missing_arm64_package_blocks_metadata_publication(self):
+        self.write_linux_assets()
+        (self.root / build_file_name(self.version, 'linux', 'arm64', 'AppImage')).unlink()
+        with self.assertRaisesRegex(RuntimeError, 'Missing release asset: .*linux-arm64.AppImage'):
+            self.run_validator('linux')
+        self.assertFalse(self.manifest.exists())
+
+    def test_default_still_requires_original_all_platform_matrix(self):
+        self.write_linux_assets()
+        with self.assertRaisesRegex(RuntimeError, 'Missing release asset: .*win-x64.exe'):
+            self.run_validator()
 
 
 if __name__ == "__main__":

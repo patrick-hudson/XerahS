@@ -23,6 +23,7 @@
 
 #endregion License Information (GPL v3)
 
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 
 namespace XerahS.Tests.Build;
@@ -84,16 +85,48 @@ public class DistroRepoPackagingTests
     }
 
     [Test]
-    public void ReleaseWorkflow_HasSecretsGatedLinuxRepoJob()
+    public void ForkWorkflows_KeepBuildReadOnlyAndPublicationGatedToFork()
     {
-        string workflow = File.ReadAllText(Path.Combine(RepoRoot,
-            ".github", "workflows", "release-build-all-platforms.yml"));
+        string directory = Path.Combine(RepoRoot, ".github", "workflows");
+        string[] workflowFiles = Directory.GetFiles(directory)
+            .Where(path => Path.GetExtension(path) is ".yml" or ".yaml")
+            .Select(path => Path.GetFileName(path)!)
+            .ToArray();
+        Assert.That(workflowFiles, Is.EquivalentTo(new[] { "build.yml", "release-linux.yml" }));
 
-        Assert.That(workflow, Does.Contain("publish-linux-repos"));
-        Assert.That(workflow, Does.Contain("publish-distro-repos.sh"));
-        Assert.That(workflow, Does.Contain("LAUNCHPAD_GPG_PRIVATE_KEY"));
-        Assert.That(workflow, Does.Contain("COPR_CONFIG"));
-        Assert.That(workflow, Does.Contain("OSC_PASSWORD"));
+        string build = File.ReadAllText(Path.Combine(directory, "build.yml"));
+        string release = File.ReadAllText(Path.Combine(directory, "release-linux.yml"));
+        string workflows = build + release;
+        Assert.That(workflows, Does.Not.Contain("secrets."));
+        Assert.That(workflows, Does.Not.Contain("publish-distro-repos"));
+        Assert.That(build, Does.Contain("contents: read"));
+        Assert.That(build, Does.Not.Contain("contents: write"));
+        Assert.That(WorkflowJob(build, "verify"), Does.Contain("github.repository == 'patrick-hudson/XerahS'"));
+
+        string reusableBuild = WorkflowJob(release, "build");
+        Assert.That(reusableBuild, Does.Contain("uses: ./.github/workflows/build.yml"));
+        Assert.That(reusableBuild, Does.Contain("contents: read"));
+        Assert.That(reusableBuild, Does.Not.Contain("contents: write"));
+
+        string publish = WorkflowJob(release, "publish");
+        string gate = Regex.Match(publish, @"(?m)^    if: (.+)$").Groups[1].Value;
+        Assert.That(gate, Does.StartWith("github.repository == 'patrick-hudson/XerahS' && ("));
+        Assert.That(gate, Does.Contain("github.event_name == 'push' && github.ref_type == 'tag'"));
+        Assert.That(gate, Does.Contain("github.event_name == 'workflow_dispatch' && inputs.publish == true"));
+        Assert.That(publish, Does.Contain("needs: build"));
+        Assert.That(publish, Does.Contain("contents: write"));
+        Assert.That(Regex.Matches(release, @"contents:\s*write").Count, Is.EqualTo(1));
+        Assert.That(publish, Does.Contain("test \"$GITHUB_REPOSITORY\" = 'patrick-hudson/XerahS'"));
+        Assert.That(publish, Does.Contain("--repo \"$GITHUB_REPOSITORY\""));
+        Assert.That(publish, Does.Contain("repos/${GITHUB_REPOSITORY}/git/refs"));
+    }
+
+    private static string WorkflowJob(string workflow, string job)
+    {
+        Match match = Regex.Match(workflow,
+            @"(?ms)^  " + Regex.Escape(job) + @":\r?\n(?<body>.*?)(?=^  [A-Za-z][\w-]*:\r?$|\z)");
+        Assert.That(match.Success, Is.True, $"Missing workflow job: {job}");
+        return match.Groups["body"].Value;
     }
 
     [Test]
